@@ -15,7 +15,6 @@ License: MIT
 
 import gc
 import os
-import random
 import subprocess
 import tempfile
 import time
@@ -70,6 +69,19 @@ def download_weights(url: str, dest: str) -> None:
         )
 
 
+def set_seed(seed: int, device: str) -> None:
+    """Sets the random seed for reproducibility across torch, numpy, and random."""
+    import random
+    import numpy as np
+    
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device == "cuda":
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
 class Predictor(BasePredictor):
     """Chatterbox Multilingual TTS Predictor for Replicate"""
 
@@ -120,8 +132,7 @@ class Predictor(BasePredictor):
     def predict(
         self,
         text: str = Input(
-            description="Text to synthesize into speech",
-            max_length=300
+            description="Text to synthesize into speech (maximum 300 characters)"
         ),
         language: str = Input(
             description="Language for synthesis",
@@ -129,75 +140,83 @@ class Predictor(BasePredictor):
             default="en"
         ),
         reference_audio: Optional[CogPath] = Input(
-            description="Reference audio file for voice cloning (optional)",
+            description="Reference audio file for voice cloning (optional). If not provided, uses default voice for the selected language.",
             default=None
         ),
-        temperature: float = Input(
-            description="Controls speech variation. Higher = more expressive",
-            ge=0.05,
-            le=5.0,
-            default=0.8
-        ),
         exaggeration: float = Input(
-            description="Speech expressiveness level. Higher = more dramatic",
+            description="Controls speech expressiveness (0.25-2.0, neutral=0.5, extreme values may be unstable)",
             ge=0.25,
             le=2.0,
             default=0.5
         ),
+        temperature: float = Input(
+            description="Controls randomness in generation (0.05-5.0, higher=more varied)",
+            ge=0.05,
+            le=5.0,
+            default=0.8
+        ),
         cfg_weight: float = Input(
-            description="Classifier-free guidance. 0=natural, 1=guided",
-            ge=0.0,
+            description="CFG/Pace weight controlling generation guidance (0.2-1.0). Use 0.5 for balanced results, 0 for language transfer",
+            ge=0.2,
             le=1.0,
             default=0.5
         ),
-        seed: Optional[int] = Input(
-            description="Random seed for reproducible generation",
-            default=None
+        seed: int = Input(
+            description="Random seed for reproducible results (0 for random generation)",
+            default=0
         ),
     ) -> CogPath:
-        """Generate multilingual speech from text"""
+        """
+        Generate high-quality speech audio from text using Chatterbox Multilingual model with optional reference audio styling.
+        
+        This tool synthesizes natural-sounding speech from input text. When a reference audio file 
+        is provided, it captures the speaker's voice characteristics and speaking style. The generated audio 
+        maintains the prosody, tone, and vocal qualities of the reference speaker, or uses default voice if no reference is provided.
+        """
         
         # Input validation and processing
         if not text.strip():
             raise ValueError("Text input cannot be empty")
-        
-        original_length = len(text)
-        if original_length > 300:
-            text = text[:300]
-            print(f"⚠️  Text truncated from {original_length} to 300 characters")
 
-        # Set reproducible seed
-        if seed is not None:
-            random.seed(seed)
-            torch.manual_seed(seed)
-            if self.device == "cuda":
-                torch.cuda.manual_seed_all(seed)
+        # Set reproducible seed - following app.py pattern
+        if seed != 0:
+            set_seed(seed, self.device)
 
-        print(f"🗣️  Synthesizing: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        # Truncate text to maximum characters (following app.py)
+        text_to_synthesize = text[:300]
+        if len(text) > 300:
+            print(f"⚠️  Text truncated from {len(text)} to 300 characters")
+
+        print(f"🗣️  Generating audio for text: '{text_to_synthesize[:50]}{'...' if len(text_to_synthesize) > 50 else ''}'")
         print(f"🌍 Language: {SUPPORTED_LANGUAGES[language]} ({language})")
 
-        # Get reference audio (uploaded or default)
-        reference_path = self._get_reference_audio(language, reference_audio)
+        # Handle optional audio prompt - following app.py resolve_audio_prompt pattern
+        audio_prompt_path = self._resolve_audio_prompt(language, reference_audio)
         
-        # Prepare generation kwargs
-        generation_kwargs = {
-            "temperature": temperature,
+        # Prepare generation kwargs - following app.py structure
+        generate_kwargs = {
             "exaggeration": exaggeration,
+            "temperature": temperature,
             "cfg_weight": cfg_weight,
         }
         
-        if reference_path:
-            generation_kwargs["audio_prompt_path"] = reference_path
+        if audio_prompt_path:
+            generate_kwargs["audio_prompt_path"] = audio_prompt_path
+            print(f"📎 Using audio prompt: {audio_prompt_path}")
+        else:
+            print("ℹ️  No audio prompt provided; using default voice.")
 
-        # Generate speech
-        audio_tensor = self.model.generate(
-            text=text,
+        # Generate speech - following app.py generate call pattern
+        wav = self.model.generate(
+            text_to_synthesize,
             language_id=language,
-            **generation_kwargs
+            **generate_kwargs
         )
         
-        # Convert to numpy and save output
-        audio_array = audio_tensor.squeeze(0).cpu().numpy()
+        print("✅ Audio generation complete.")
+        
+        # Convert to numpy and save output - following app.py return pattern
+        audio_array = wav.squeeze(0).cpu().numpy()
         output_path = Path("/tmp/output.wav")
         wavfile.write(str(output_path), self.model.sr, audio_array)
         
@@ -206,17 +225,19 @@ class Predictor(BasePredictor):
             torch.cuda.empty_cache()
         gc.collect()
         
-        print("✅ Speech synthesis completed")
         return CogPath(output_path)
 
-    def _get_reference_audio(self, language: str, uploaded_audio: Optional[CogPath]) -> Optional[str]:
-        """Get reference audio path - either uploaded file or language default"""
-        if uploaded_audio:
-            print(f"📎 Using uploaded reference audio")
-            return str(uploaded_audio)
+    def _resolve_audio_prompt(self, language_id: str, provided_audio: Optional[CogPath]) -> Optional[str]:
+        """
+        Decide which audio prompt to use - following app.py resolve_audio_prompt pattern:
+        - If user provided a path (upload), use it.
+        - Else, fall back to language-specific default (if any).
+        """
+        if provided_audio:
+            return str(provided_audio)
         
-        # Language-specific default voices
-        default_urls = {
+        # Language-specific default voices - matches app.py LANGUAGE_CONFIG
+        default_voice_urls = {
             "ar": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ar_m1.flac",
             "da": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/da_m1.flac",
             "de": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/de_f1.flac",
@@ -242,9 +263,8 @@ class Predictor(BasePredictor):
             "zh": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/zh_f.flac",
         }
         
-        url = default_urls.get(language)
+        url = default_voice_urls.get(language_id)
         if not url:
-            print(f"ℹ️  No default voice available for {language}")
             return None
             
         return self._download_reference_audio(url)
@@ -261,10 +281,10 @@ class Predictor(BasePredictor):
                     if chunk:
                         f.write(chunk)
             
-            print(f"🎵 Downloaded reference voice")
+            print(f"🎵 Downloaded default reference voice for language")
             return temp_path
             
         except requests.RequestException as e:
             print(f"⚠️  Failed to download reference voice: {e}")
-            print("ℹ️  Continuing with model's default voice")
+            print("ℹ️  Continuing without reference audio")
             return None
