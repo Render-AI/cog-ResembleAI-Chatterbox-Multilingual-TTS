@@ -161,9 +161,9 @@ class Predictor(BasePredictor):
             le=1.0,
             default=0.5
         ),
-        seed: int = Input(
-            description="Random seed for reproducible results (0 for random generation)",
-            default=0
+        seed: Optional[int] = Input(
+            description="Random seed for reproducible results. Leave blank for random generation.",
+            default=None
         ),
     ) -> CogPath:
         """
@@ -178,9 +178,15 @@ class Predictor(BasePredictor):
         if not text.strip():
             raise ValueError("Text input cannot be empty")
 
-        # Set reproducible seed - following app.py pattern
-        if seed != 0:
-            set_seed(seed, self.device)
+        # Handle seed - generate random if none provided
+        if seed is None:
+            seed = int.from_bytes(os.urandom(2), "big")
+            print(f"🎲 Using random seed: {seed}")
+        else:
+            print(f"🎯 Using provided seed: {seed}")
+            
+        # Set reproducible seed
+        set_seed(seed, self.device)
 
         # Truncate text to maximum characters (following app.py)
         text_to_synthesize = text[:300]
