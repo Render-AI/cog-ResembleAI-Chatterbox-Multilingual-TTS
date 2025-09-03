@@ -13,3 +13,6 @@ resemble-perth==1.0.1
 silero-vad==5.1.2
 conformer==0.3.2
 requests
+# Optimize warnings and performance
+peft>=0.12.0
+accelerate>=0.30.0

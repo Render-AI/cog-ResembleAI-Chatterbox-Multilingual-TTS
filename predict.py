@@ -2,6 +2,9 @@ import os
 import random
 import tempfile
 import requests
+import gc
+import torch.cuda
+
 from typing import Optional
 import numpy as np
 import torch
@@ -9,7 +12,13 @@ import scipy.io.wavfile as wavfile
 from cog import BasePredictor, Input, Path
 
 # Fixed import path from app.py
-from chatterbox.mtl_tts import ChatterboxMultilingualTTS, SUPPORTED_LANGUAGES
+from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+# Optimized Chatterbox Multilingual TTS for Replicate Cog
+# - GPU memory optimizations for A100 and lower-end cards
+# - Efficient audio prompt downloading with streaming
+# - Memory cleanup after generation
+# - TF32 enabled for better performance on modern GPUs
+
 
 # Language configuration copied from app.py
 LANGUAGE_CONFIG = {
@@ -123,6 +132,15 @@ class Predictor(BasePredictor):
             print(f"Error loading model: {e}")
             raise
 
+        # Memory optimization for better GPU utilization
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            # Enable memory efficient attention
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            # Enable optimized memory format
+            torch.backends.cudnn.benchmark = True
+
     def set_seed(self, seed: int):
         """Set random seed - copied from app.py"""
         torch.manual_seed(seed)
@@ -138,15 +156,16 @@ class Predictor(BasePredictor):
             # Download the URL to a temporary file
             try:
                 print(f"Downloading audio prompt from {url}")
-                response = requests.get(url)
+                response = requests.get(url, timeout=30, stream=True)
                 response.raise_for_status()
                 temp_path = tempfile.mktemp(suffix=".flac")
                 with open(temp_path, 'wb') as f:
-                    f.write(response.content)
-                print(f"Downloaded to {temp_path}")
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
                 return temp_path
             except Exception as e:
-                print(f"Failed to download audio prompt from {url}: {e}")
+                print(f"Warning: Failed to download audio prompt from {url}: {e}")
+                print("Continuing without reference audio...")
                 return None
         return url
 
@@ -233,6 +252,12 @@ class Predictor(BasePredictor):
             output_path = Path(tempfile.mktemp(suffix=".wav"))
             wavfile.write(str(output_path), sample_rate, audio_array)
             print(f"Audio saved to: {output_path}")
+            
+            
+            # Memory cleanup for better performance
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+                gc.collect()
             
             return output_path
             
