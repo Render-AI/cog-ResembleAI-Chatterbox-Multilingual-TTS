@@ -1,147 +1,104 @@
-# Cog Template Repository
+# Chatterbox Multilingual TTS
 
-This is a template repository for creating [Cog](https://github.com/replicate/cog) models that efficiently handle model weights with proper caching. It includes tools to upload model weights to Google Cloud Storage and generate download code for your `predict.py` file.
+High-quality text-to-speech in 23 languages with voice cloning. Built by ResembleAI.
 
-[![Replicate](https://replicate.com/zsxkib/model-name/badge)](https://replicate.com/zsxkib/model-name)
+[![Replicate](https://replicate.com/zsxkib/chatterbox-multilingual-tts/badge)](https://replicate.com/zsxkib/chatterbox-multilingual-tts) 
 
-## Getting Started
+## What this does
 
-To use this template for your own model:
+This model turns text into natural-sounding speech in 23 different languages. You can either use the default voice for each language, or upload your own audio file to clone a specific voice.
 
-1. Clone this repository
-2. Modify `predict.py` with your model's implementation
-3. Update `cog.yaml` with your model's dependencies
-4. Use `cache_manager.py` to upload and manage model weights
+## Languages
 
-## Repository Structure
+Arabic, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Italian, Japanese, Korean, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swedish, Swahili, Turkish.
 
-- `predict.py`: The main model implementation file 
-- `cache_manager.py`: Script for uploading model weights to GCS and generating download code
-- `cog.yaml`: Cog configuration file that defines your model's environment
+## How to use it
 
-## Managing Model Weights with cache_manager.py
+### Basic text-to-speech
 
-A key feature of this template is the `cache_manager.py` script, which helps you:
+```python
+import replicate
 
-1. Upload model weights to Google Cloud Storage (GCS)
-2. Generate code for downloading those weights in your `predict.py`
-3. Handle both individual files and directories efficiently
-
-### Prerequisites for Using cache_manager.py
-
-- Google Cloud SDK installed and configured (`gcloud` command)
-- Permission to upload to the specified GCS bucket (default: `gs://replicate-weights/`)
-- `tar` command available in your PATH
-
-### Basic Usage
-
-```bash
-python cache_manager.py --model-name your-model-name --local-dirs model_cache
+output = replicate.run(
+    "zsxkib/chatterbox-multilingual-tts",
+    input={
+        "text": "Hello, this is a test of multilingual speech synthesis.",
+        "language": "en"
+    }
+)
 ```
 
-This will:
-1. Find files and directories in the `model_cache` directory
-2. Create tar archives of each directory
-3. Upload both individual files and tar archives to GCS
-4. Generate code snippets for downloading the weights in your `predict.py`
+### Voice cloning with reference audio
 
-### Advanced Usage
+```python
+import replicate
 
-```bash
-python cache_manager.py \
-    --model-name your-model-name \
-    --local-dirs model_cache weights \
-    --gcs-base-path gs://replicate-weights/ \
-    --cdn-base-url https://weights.replicate.delivery/default/ \
-    --keep-tars
+output = replicate.run(
+    "zsxkib/chatterbox-multilingual-tts",
+    input={
+        "text": "This will sound like the voice in my reference audio.",
+        "language": "en",
+        "reference_audio": open("voice_sample.wav", "rb")
+    }
+)
 ```
 
-#### Parameters
+### Advanced options
 
-- `--model-name`: Required. The name of your model (used in paths)
-- `--local-dirs`: Required. One or more local directories to process
-- `--gcs-base-path`: Optional. Base Google Cloud Storage path
-- `--cdn-base-url`: Optional. Base CDN URL
-- `--keep-tars`: Optional. Keep the generated .tar files locally after upload
+```python
+import replicate
 
-## Workflow Example
+output = replicate.run(
+    "zsxkib/chatterbox-multilingual-tts",
+    input={
+        "text": "More expressive speech with custom settings.",
+        "language": "en",
+        "exaggeration": 0.7,      # More dramatic (0.25-2.0)
+        "temperature": 1.2,       # More varied (0.05-5.0) 
+        "cfg_weight": 0.8,        # More guided (0.2-1.0)
+        "seed": 42                # Reproducible results
+    }
+)
+```
 
-1. **Develop your model locally**:
-   ```bash
-   # Run your model once to download weights to model_cache
-   cog predict -i prompt="test"
-   ```
+## Parameters
 
-2. **Upload model weights**:
-   ```bash
-   python cache_manager.py --model-name your-model-name --local-dirs model_cache
-   ```
+- **text**: The text you want to turn into speech (max 300 characters)
+- **language**: Two-letter language code (like "en" for English)
+- **reference_audio**: Upload an audio file to clone that voice (optional)
+- **exaggeration**: How expressive the speech is. 0.5 is neutral, higher is more dramatic
+- **temperature**: Randomness in generation. Higher values give more varied speech
+- **cfg_weight**: How much the model follows guidance. 0.5 is balanced, higher is more controlled
+- **seed**: Set to the same number to get the same result every time
 
-3. **Copy the generated code snippet** into your `predict.py`
+## Examples by language
 
-4. **Test that the model can download weights**:
-   ```bash
-   rm -rf model_cache
-   cog predict -i prompt="test"
-   ```
+**English**: "Last month, we reached a new milestone with two billion views on our YouTube channel."
 
-## Example Implementation
+**Spanish**: "El mes pasado alcanzamos un nuevo hito: dos mil millones de visualizaciones en nuestro canal de YouTube."
 
-The template comes with a sample Stable Diffusion implementation in `predict.py` that demonstrates:
+**French**: "Le mois dernier, nous avons atteint un nouveau jalon avec deux milliards de vues sur notre chaîne YouTube."
 
-- Setting up the model cache directory
-- Downloading weights from GCS with progress reporting
-- Setting environment variables for model caching
-- Random seed generation for reproducibility
-- Output format and quality options
+**German**: "Letzten Monat haben wir einen neuen Meilenstein erreicht: zwei Milliarden Aufrufe auf unserem YouTube-Kanal."
 
-## Best Practices
+**Chinese**: "先月、私たちのYouTubeチャンネルで二十億回の再生回数という新たなマイルストーンに到達しました。"
 
-- **Environment Variables**: Set cache-related environment variables early
-  ```python
-  os.environ["HF_HOME"] = MODEL_CACHE
-  os.environ["TORCH_HOME"] = MODEL_CACHE
-  # etc.
-  ```
+## Tips for better results
 
-- **Seed Management**: Provide a seed parameter and implement random seed generation
-  ```python
-  if seed is None:
-      seed = int.from_bytes(os.urandom(2), "big")
-  print(f"Using seed: {seed}")
-  ```
+- **Keep text under 300 characters** - longer text gets cut off
+- **Use punctuation** - it helps with natural pauses and rhythm  
+- **Match your reference audio language** - the model works best when the reference voice speaks the same language as your text
+- **Reference audio should be 3-10 seconds** - clean speech without background noise works best
+- **Try different exaggeration values** - 0.3 for calm speech, 0.8 for more energetic
 
-- **Output Formats**: Support multiple output formats (webp, jpg, png) with quality controls
-  ```python
-  output_format: str = Input(
-      description="Format of the output image",
-      choices=["webp", "jpg", "png"],
-      default="webp"
-  )
-  output_quality: int = Input(
-      description="The image compression quality...",
-      ge=1, le=100, default=80
-  )
-  ```
+## About voice cloning
 
-## Deploying to Replicate
+When you upload reference audio, the model tries to match the voice characteristics like pitch, accent, and speaking style. It works better with clear audio of a single speaker. The model can't perfectly clone any voice, but it gets pretty close for most cases.
 
-After setting up your model, you can push it to [Replicate](https://replicate.com):
+## Model details
 
-1. Create a new model on Replicate
-2. Push your model:
-   ```bash
-   cog push r8.im/username/model-name
-   ```
+This is ResembleAI's Chatterbox Multilingual model. It uses a neural text-to-speech system trained on speech data from 23 languages. The model can generate high-quality audio at 24kHz sample rate.
 
 ## License
 
 MIT
-
----
-
----
-
-⭐ Star this on [GitHub](https://github.com/zsxkib/model-name)!
-
-👋 Follow `zsxkib` on [Twitter/X](https://twitter.com/zsakib_)
