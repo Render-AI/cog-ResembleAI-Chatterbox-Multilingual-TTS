@@ -187,3 +187,17 @@ cython_debug/
 *.avi
 *.mkv
 *.flv
+
+# VS Code
+.vscode
+
+# Pylance
+pyrightconfig.json
+
+# Project-specific directories
+syn_out/
+checkpoints/
+.gradio
+
+# Ignore generated sample .wav files
+**/*.wav
