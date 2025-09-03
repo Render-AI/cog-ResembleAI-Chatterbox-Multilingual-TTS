@@ -27,6 +27,15 @@ import torch
 from scipy.io import wavfile
 from cog import BasePredictor, Input, Path as CogPath
 
+# Configure model cache directory for all ML frameworks
+MODEL_CACHE = "model_cache"
+
+os.environ["HF_HOME"] = MODEL_CACHE
+os.environ["TORCH_HOME"] = MODEL_CACHE
+os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
+os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
+os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
+
 # Suppress specific warnings that don't affect functionality
 warnings.filterwarnings("ignore", message="TypedStorage is deprecated")
 warnings.filterwarnings("ignore", message=".*torchvision.datapoints.*")
@@ -39,7 +48,23 @@ class Predictor(BasePredictor):
     """Chatterbox Multilingual TTS Predictor for Replicate"""
 
     def setup(self) -> None:
-        """Load the multilingual TTS model"""
+        """
+        Load the multilingual TTS model
+        
+        Note: This model requires pre-downloaded weights from a private HuggingFace repository.
+        To download the model weights, use:
+        
+        huggingface-cli download ResembleAI/Chatterbox-Multilingual-AllLang \
+            --local-dir model_cache \
+            --token YOUR_HF_TOKEN
+            
+        The model files should be placed in the model_cache/ directory:
+        - t3_alllang.safetensors (2.0GB) - Main multilingual TTS model
+        - s3gen.pt (1.0GB) - Speech generator model  
+        - ve.pt (5.5MB) - Voice encoder for speaker embeddings
+        - conds.pt (105KB) - Default voice conditionals
+        - mtl_tokenizer.json (67KB) - Multilingual tokenizer
+        """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"🚀 Initializing Chatterbox Multilingual TTS on {self.device}")
         

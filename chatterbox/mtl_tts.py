@@ -193,7 +193,7 @@ class ChatterboxMultilingualTTS:
     @classmethod
     def from_pretrained(cls, device: torch.device) -> 'ChatterboxMultilingualTTS':
         # Use local model files
-        ckpt_dir = Path("./models")
+        ckpt_dir = Path("./model_cache")
         return cls.from_local(ckpt_dir, device)
     
     def prepare_conditionals(self, wav_fpath, exaggeration=0.5):
