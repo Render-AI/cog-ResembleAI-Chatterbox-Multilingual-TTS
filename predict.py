@@ -1,136 +1,241 @@
-# Prediction interface for Cog ⚙️
-# https://cog.run/python
-
 import os
-
-MODEL_CACHE = "model_cache"
-BASE_URL = "https://weights.replicate.delivery/default/test-sd-15/model_cache/"
-os.environ["HF_HOME"] = MODEL_CACHE
-os.environ["TORCH_HOME"] = MODEL_CACHE
-os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
-os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
-os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
-
-import mimetypes
-
-mimetypes.add_type("image/webp", ".webp")
-
-import time
-import torch
-import subprocess
+import random
+import tempfile
+import requests
 from typing import Optional
+import numpy as np
+import torch
+import scipy.io.wavfile as wavfile
 from cog import BasePredictor, Input, Path
-from diffusers import StableDiffusionPipeline
 
+# Fixed import path from app.py
+from chatterbox.mtl_tts import ChatterboxMultilingualTTS, SUPPORTED_LANGUAGES
 
-def download_weights(url: str, dest: str) -> None:
-    start = time.time()
-    print("[!] Initiating download from URL: ", url)
-    print("[~] Destination path: ", dest)
-    if ".tar" in dest:
-        dest = os.path.dirname(dest)
-    command = ["pget", "-vf" + ("x" if ".tar" in url else ""), url, dest]
-    try:
-        print(f"[~] Running command: {' '.join(command)}")
-        subprocess.check_call(command, close_fds=False)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}."
-        )
-        raise
-    print("[+] Download completed in: ", time.time() - start, "seconds")
+# Language configuration copied from app.py
+LANGUAGE_CONFIG = {
+    "ar": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ar_m1.flac",
+        "text": "في الشهر الماضي، وصلنا إلى معلم جديد بمليارين من المشاهدات على قناتنا على يوتيوب."
+    },
+    "da": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/da_m1.flac",
+        "text": "Sidste måned nåede vi en ny milepæl med to milliarder visninger på vores YouTube-kanal."
+    },
+    "de": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/de_f1.flac",
+        "text": "Letzten Monat haben wir einen neuen Meilenstein erreicht: zwei Milliarden Aufrufe auf unserem YouTube-Kanal."
+    },
+    "el": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/el_m.flac",
+        "text": "Τον περασμένο μήνα, φτάσαμε σε ένα νέο ορόσημο με δύο δισεκατομμύρια προβολές στο κανάλι μας στο YouTube."
+    },
+    "en": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/en_f1.flac",
+        "text": "Last month, we reached a new milestone with two billion views on our YouTube channel."
+    },
+    "es": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/es_f1.flac",
+        "text": "El mes pasado alcanzamos un nuevo hito: dos mil millones de visualizaciones en nuestro canal de YouTube."
+    },
+    "fi": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/fi_m.flac",
+        "text": "Viime kuussa saavutimme uuden virstanpylvään kahden miljardin katselukerran kanssa YouTube-kanavallamme."
+    },
+    "fr": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/fr_f1.flac",
+        "text": "Le mois dernier, nous avons atteint un nouveau jalon avec deux milliards de vues sur notre chaîne YouTube."
+    },
+    "he": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/he_m1.flac",
+        "text": "בחודש שעבר הגענו לאבן דרך חדשה עם שני מיליארד צפיות בערוץ היוטיוב שלנו."
+    },
+    "hi": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/hi_f1.flac",
+        "text": "पिछले महीने हमने एक नया मील का पत्थर छुआ: हमारे YouTube चैनल पर दो अरब व्यूज़।"
+    },
+    "it": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/it_m1.flac",
+        "text": "Il mese scorso abbiamo raggiunto un nuovo traguardo: due miliardi di visualizzazioni sul nostro canale YouTube."
+    },
+    "ja": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ja_f.flac",
+        "text": "先月、私たちのYouTubeチャンネルで二十億回の再生回数という新たなマイルストーンに到達しました。"
+    },
+    "ko": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ko_f.flac",
+        "text": "지난달 우리는 유튜브 채널에서 이십억 조회수라는 새로운 이정표에 도달했습니다."
+    },
+    "ms": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ms_f.flac",
+        "text": "Bulan lepas, kami mencapai pencapaian baru dengan dua bilion tontonan di saluran YouTube kami."
+    },
+    "nl": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/nl_m.flac",
+        "text": "Vorige maand bereikten we een nieuwe mijlpaal met twee miljard weergaven op ons YouTube-kanaal."
+    },
+    "no": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/no_f1.flac",
+        "text": "Forrige måned nådde vi en ny milepæl med to milliarder visninger på YouTube-kanalen vår."
+    },
+    "pl": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/pl_m.flac",
+        "text": "W zeszłym miesiącu osiągnęliśmy nowy kamień milowy z dwoma miliardami wyświetleń na naszym kanale YouTube."
+    },
+    "pt": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/pt_m1.flac",
+        "text": "No mês passado, alcançámos um novo marco: dois mil milhões de visualizações no nosso canal do YouTube."
+    },
+    "ru": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ru_m.flac",
+        "text": "В прошлом месяце мы достигли нового рубежа: два миллиарда просмотров на нашем YouTube-канале."
+    },
+    "sv": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/sv_f.flac",
+        "text": "Förra månaden nådde vi en ny milstolpe med två miljarder visningar på vår YouTube-kanal."
+    },
+    "sw": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/sw_m.flac",
+        "text": "Mwezi uliopita, tulifika hatua mpya ya maoni ya bilioni mbili kweny kituo chetu cha YouTube."
+    },
+    "tr": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/tr_m.flac",
+        "text": "Geçen ay YouTube kanalımızda iki milyar görüntüleme ile yeni bir dönüm noktasına ulaştık."
+    },
+    "zh": {
+        "audio": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/zh_f.flac",
+        "text": "上个月，我们达到了一个新的里程碑，我们的YouTube频道观看次数达到了二十亿次，这绝对令人难以置信。"
+    },
+}
 
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
-        """Load the model into memory to make running multiple predictions efficient"""
-        # Create model cache directory if it doesn't exist
-        if not os.path.exists(MODEL_CACHE):
-            os.makedirs(MODEL_CACHE)
+        """Load the model - adapted from app.py get_or_load_model()"""
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"🚀 Running on device: {self.device}")
+        
+        try:
+            self.model = ChatterboxMultilingualTTS.from_pretrained(self.device)
+            if hasattr(self.model, 'to') and str(self.model.device) != self.device:
+                self.model.to(self.device)
+            print(f"Model loaded successfully. Device: {getattr(self.model, 'device', 'N/A')}")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            raise
 
-        model_files = [
-            "models--sd-legacy--stable-diffusion-v1-5.tar",
-        ]
+    def set_seed(self, seed: int):
+        """Set random seed - copied from app.py"""
+        torch.manual_seed(seed)
+        if self.device == "cuda":
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+        random.seed(seed)
 
-        for model_file in model_files:
-            url = BASE_URL + model_file
-            filename = url.split("/")[-1]
-            dest_path = os.path.join(MODEL_CACHE, filename)
-            if not os.path.exists(dest_path.replace(".tar", "")):
-                download_weights(url, dest_path)
-
-        # Load the model
-        model_id = "sd-legacy/stable-diffusion-v1-5"
-        self.pipe = StableDiffusionPipeline.from_pretrained(
-            model_id, torch_dtype=torch.float16, cache_dir=MODEL_CACHE
-        )
-        self.pipe = self.pipe.to("cuda")
+    def default_audio_for_ui(self, lang: str) -> str:
+        """Get default audio prompt for language - with URL download support"""
+        url = LANGUAGE_CONFIG.get(lang, {}).get("audio")
+        if url and url.startswith('http'):
+            # Download the URL to a temporary file
+            try:
+                print(f"Downloading audio prompt from {url}")
+                response = requests.get(url)
+                response.raise_for_status()
+                temp_path = tempfile.mktemp(suffix=".flac")
+                with open(temp_path, 'wb') as f:
+                    f.write(response.content)
+                print(f"Downloaded to {temp_path}")
+                return temp_path
+            except Exception as e:
+                print(f"Failed to download audio prompt from {url}: {e}")
+                return None
+        return url
 
     def predict(
         self,
-        prompt: str = Input(description="Text prompt for image generation"),
-        num_inference_steps: int = Input(
-            description="Number of denoising steps", ge=1, le=100, default=50
+        text_to_synthesize: str = Input(description="Text to synthesize into speech (max 300 chars)"),
+        language_id: str = Input(
+            description="Language code",
+            choices=list(LANGUAGE_CONFIG.keys()),
+            default="en"
         ),
-        guidance_scale: float = Input(
-            description="Guidance scale for text conditioning",
-            ge=1.0,
-            le=20.0,
-            default=7.5,
+        reference_audio: Optional[Path] = Input(
+            description="Optional reference audio file for voice style",
+            default=None
         ),
-        seed: Optional[int] = Input(
-            description="Random seed for reproducible results. Leave blank for a random seed.",
-            default=None,
+        exaggeration: float = Input(
+            description="Speech expressiveness (0.25-2.0)",
+            ge=0.25,
+            le=2.0,
+            default=0.5
         ),
-        output_format: str = Input(
-            description="Format of the output image",
-            choices=["webp", "jpg", "png"],
-            default="webp",
+        temperature: float = Input(
+            description="Generation randomness (0.05-5.0)",
+            ge=0.05,
+            le=5.0,
+            default=0.8
         ),
-        output_quality: int = Input(
-            description="The image compression quality (for lossy formats like JPEG and WebP). 100 = best quality, 0 = lowest quality.",
-            ge=1,
-            le=100,
-            default=80,
+        seed: int = Input(
+            description="Random seed (0 for random)",
+            ge=0,
+            default=0
         ),
+        cfg_weight: float = Input(
+            description="CFG weight (0.0-1.0)",
+            ge=0.0,
+            le=1.0,
+            default=0.5
+        )
     ) -> Path:
-        """Generate an image from a text prompt"""
-        # Set up generator with seed if provided
-        if seed is None:
-            seed = int.from_bytes(os.urandom(2), "big")
-        print(f"Using seed: {seed}")
+        """Generate TTS audio - logic copied from app.py generate_tts_audio()"""
+        
+        if not self.model:
+            raise RuntimeError("TTS model is not loaded.")
 
-        # Generate image
-        image = self.pipe(
-            prompt=prompt,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            seed=seed,
-        ).images[0]
+        # Set seed if provided
+        if seed != 0:
+            self.set_seed(seed)
 
-        # Ensure image is in RGB mode
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+        print(f"Generating audio for text: '{text_to_synthesize[:50]}...'")
+        
+        # Handle optional audio prompt - logic from app.py
+        if reference_audio:
+            chosen_prompt = str(reference_audio)
+        else:
+            chosen_prompt = self.default_audio_for_ui(language_id)
 
-        # Prepare saving arguments
-        extension = output_format.lower()
-        save_params = {}
+        # Prepare generation kwargs - copied from app.py
+        generate_kwargs = {
+            "exaggeration": exaggeration,
+            "temperature": temperature,
+            "cfg_weight": cfg_weight,
+        }
+        
+        if chosen_prompt:
+            generate_kwargs["audio_prompt_path"] = chosen_prompt
+            print(f"Using audio prompt: {chosen_prompt}")
+        else:
+            print("No audio prompt provided; using default voice.")
 
-        # Add quality parameter for lossy formats
-        if output_format != "png":
-            print(f"[~] Output quality: {output_quality}")
-            save_params["quality"] = output_quality
-            save_params["optimize"] = True
-
-        # Handle jpg/jpeg naming
-        if extension == "jpg":
-            extension = "jpeg"
-
-        # Create output path
-        output_path = Path(f"output.{extension}")
-
-        # Save the image with appropriate parameters
-        image.save(str(output_path), **save_params)
-        print(f"[+] Saved output as {output_format.upper()}")
-
-        return output_path
+        try:
+            # Core generation call - exactly from app.py
+            wav = self.model.generate(
+                text_to_synthesize[:300],  # Truncate text to max chars
+                language_id=language_id,
+                **generate_kwargs
+            )
+            print("Audio generation complete.")
+            
+            # Convert to numpy and get sample rate - from app.py
+            sample_rate = self.model.sr
+            audio_array = wav.squeeze(0).numpy()
+            
+            # Save to temporary file for Cog to serve
+            output_path = Path(tempfile.mktemp(suffix=".wav"))
+            wavfile.write(str(output_path), sample_rate, audio_array)
+            print(f"Audio saved to: {output_path}")
+            
+            return output_path
+            
+        except Exception as e:
+            print(f"Error during audio generation: {e}")
+            raise
