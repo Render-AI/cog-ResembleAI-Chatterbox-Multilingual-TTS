@@ -17,6 +17,7 @@ import gc
 import os
 import random
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,11 @@ import requests
 import torch
 from scipy.io import wavfile
 from cog import BasePredictor, Input, Path as CogPath
+
+# Suppress specific warnings that don't affect functionality
+warnings.filterwarnings("ignore", message="TypedStorage is deprecated")
+warnings.filterwarnings("ignore", message=".*torchvision.datapoints.*")
+warnings.filterwarnings("ignore", category=FutureWarning, module="librosa")
 
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS, SUPPORTED_LANGUAGES
 
@@ -37,18 +43,21 @@ class Predictor(BasePredictor):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"🚀 Initializing Chatterbox Multilingual TTS on {self.device}")
         
-        # Load model from local files (downloaded during container build)
-        self.model = ChatterboxMultilingualTTS.from_pretrained(self.device)
-        
-        # Optimize GPU performance
+        # Optimize PyTorch settings for better performance
         if self.device == "cuda":
-            torch.cuda.empty_cache()
+            # Enable TF32 for faster training/inference on Ampere GPUs
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
+            torch.cuda.empty_cache()
         
-        print(f"✅ Model loaded successfully on {self.device}")
-        print(f"📋 Supports {len(SUPPORTED_LANGUAGES)} languages: {', '.join(SUPPORTED_LANGUAGES.keys())}")
+        # Load model with optimized settings
+        try:
+            self.model = ChatterboxMultilingualTTS.from_pretrained(self.device)
+            print(f"✅ Model loaded successfully")
+            print(f"📋 Supporting {len(SUPPORTED_LANGUAGES)} languages")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model: {str(e)}")
 
     def predict(
         self,
@@ -95,27 +104,25 @@ class Predictor(BasePredictor):
             Audio file containing synthesized speech
         """
         # Input validation
-        if len(text.strip()) == 0:
+        if not text.strip():
             raise ValueError("Text input cannot be empty")
         
-        if len(text) > 300:
+        original_length = len(text)
+        if original_length > 300:
             text = text[:300]
-            print(f"⚠️  Text truncated to 300 characters")
+            print(f"⚠️  Text truncated from {original_length} to 300 characters")
 
-        # Set random seed for reproducibility
+        # Set reproducible seed
         if seed is not None:
-            random.seed(seed)
-            torch.manual_seed(seed)
-            if self.device == "cuda":
-                torch.cuda.manual_seed_all(seed)
+            self._set_seed(seed)
 
-        print(f"🗣️  Synthesizing: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        print(f"🗣️  Synthesizing: '{self._truncate_for_display(text, 50)}'")
         print(f"🌍 Language: {SUPPORTED_LANGUAGES[language]} ({language})")
 
-        # Resolve reference audio (uploaded file or default for language)
+        # Get reference audio (uploaded or default)
         reference_path = self._get_reference_audio(language, reference_audio)
         
-        # Generate speech
+        # Generate speech with error handling
         try:
             audio_array, sample_rate = self._generate_speech(
                 text=text,
@@ -126,26 +133,38 @@ class Predictor(BasePredictor):
                 cfg_weight=cfg_weight
             )
             
-            # Save to output file
+            # Save output
             output_path = Path("/tmp/output.wav")
             wavfile.write(str(output_path), sample_rate, audio_array)
             
-            # Memory cleanup for better GPU utilization
+            # Clean up memory
             self._cleanup_memory()
             
-            print("✅ Speech synthesis completed successfully")
+            print("✅ Speech synthesis completed")
             return CogPath(output_path)
             
         except Exception as e:
             self._cleanup_memory()
             raise RuntimeError(f"Speech synthesis failed: {str(e)}")
 
+    def _set_seed(self, seed: int) -> None:
+        """Set random seed for reproducible generation"""
+        random.seed(seed)
+        torch.manual_seed(seed)
+        if self.device == "cuda":
+            torch.cuda.manual_seed_all(seed)
+
+    def _truncate_for_display(self, text: str, max_len: int) -> str:
+        """Truncate text for clean logging display"""
+        return f"{text[:max_len]}..." if len(text) > max_len else text
+
     def _get_reference_audio(self, language: str, uploaded_audio: Optional[CogPath]) -> Optional[str]:
         """Get reference audio path - either uploaded file or language default"""
         if uploaded_audio:
+            print(f"📎 Using uploaded reference audio")
             return str(uploaded_audio)
         
-        # Use language-specific default voice
+        # Language-specific default voices
         default_urls = {
             "ar": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/ar_m1.flac",
             "da": "https://storage.googleapis.com/chatterbox-demo-samples/mtl_prompts/da_m1.flac",
@@ -174,22 +193,29 @@ class Predictor(BasePredictor):
         
         url = default_urls.get(language)
         if not url:
+            print(f"ℹ️  No default voice available for {language}")
             return None
             
-        # Download reference audio
+        return self._download_reference_audio(url)
+
+    def _download_reference_audio(self, url: str) -> Optional[str]:
+        """Download reference audio with proper error handling"""
         try:
-            response = requests.get(url, timeout=30)
+            response = requests.get(url, timeout=30, stream=True)
             response.raise_for_status()
             
             temp_path = tempfile.mktemp(suffix=".flac")
             with open(temp_path, 'wb') as f:
-                f.write(response.content)
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
             
-            print(f"📥 Downloaded reference voice for {language}")
+            print(f"🎵 Downloaded reference voice")
             return temp_path
             
         except Exception as e:
-            print(f"⚠️  Could not download reference audio: {e}")
+            print(f"⚠️  Failed to download reference voice: {e}")
+            print("ℹ️  Continuing with model's default voice")
             return None
 
     def _generate_speech(
@@ -202,22 +228,29 @@ class Predictor(BasePredictor):
         cfg_weight: float
     ) -> tuple[np.ndarray, int]:
         """Generate speech using the multilingual TTS model"""
-        # Configure generation parameters
-        generation_kwargs = {
-            "temperature": temperature,
-            "exaggeration": exaggeration,
-            "cfg_weight": cfg_weight,
-        }
         
-        if reference_path:
-            generation_kwargs["audio_prompt_path"] = reference_path
+        # Suppress some model internal warnings during generation
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*Reference mel length.*")
+            warnings.filterwarnings("ignore", message=".*return_dict_in_generate.*")
+            warnings.filterwarnings("ignore", message=".*past_key_values.*")
+            warnings.filterwarnings("ignore", message=".*LlamaModel is using.*")
             
-        # Generate audio tensor
-        audio_tensor = self.model.generate(
-            text=text,
-            language_id=language,
-            **generation_kwargs
-        )
+            generation_kwargs = {
+                "temperature": temperature,
+                "exaggeration": exaggeration,
+                "cfg_weight": cfg_weight,
+            }
+            
+            if reference_path:
+                generation_kwargs["audio_prompt_path"] = reference_path
+                
+            # Generate audio tensor
+            audio_tensor = self.model.generate(
+                text=text,
+                language_id=language,
+                **generation_kwargs
+            )
         
         # Convert to numpy array and get sample rate
         audio_array = audio_tensor.squeeze(0).cpu().numpy()
@@ -225,7 +258,7 @@ class Predictor(BasePredictor):
         
         return audio_array, sample_rate
 
-    def _cleanup_memory(self):
+    def _cleanup_memory(self) -> None:
         """Clean up GPU memory for optimal performance"""
         if self.device == "cuda":
             torch.cuda.empty_cache()
