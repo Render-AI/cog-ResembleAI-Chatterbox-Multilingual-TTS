@@ -13,10 +13,13 @@ Author: ResembleAI
 License: MIT
 """
 
+# --- Auto-generated Cog Cache Download Snippet (Modified for TTS) ---
 import gc
 import os
 import random
+import subprocess
 import tempfile
+import time
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -29,7 +32,9 @@ from cog import BasePredictor, Input, Path as CogPath
 
 # Configure model cache directory for all ML frameworks
 MODEL_CACHE = "model_cache"
+BASE_URL = "https://weights.replicate.delivery/default/ResembleAI-Chatterbox-Multilingual-TTS/model_cache/"
 
+# Set environment variables for model caching - needs to happen early
 os.environ["HF_HOME"] = MODEL_CACHE
 os.environ["TORCH_HOME"] = MODEL_CACHE
 os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
@@ -44,29 +49,56 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="librosa")
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS, SUPPORTED_LANGUAGES
 
 
+def download_weights(url: str, dest: str) -> None:
+    start = time.time()
+    print("[!] Initiating download from URL: ", url)
+    print("[~] Destination path: ", dest)
+    if ".tar" in dest:
+        dest = os.path.dirname(dest)
+    command = ["pget", "-vf" + ("x" if ".tar" in url else ""), url, dest]
+    try:
+        print(f"[~] Running command: {' '.join(command)}")
+        subprocess.check_call(command, close_fds=False)
+    except subprocess.CalledProcessError as e:
+        print(
+            f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}."
+        )
+        raise
+    print("[+] Download completed in: ", time.time() - start, "seconds")
+
+
 class Predictor(BasePredictor):
     """Chatterbox Multilingual TTS Predictor for Replicate"""
 
     def setup(self) -> None:
-        """
-        Load the multilingual TTS model
-        
-        Note: This model requires pre-downloaded weights from a private HuggingFace repository.
-        To download the model weights, use:
-        
-        huggingface-cli download ResembleAI/Chatterbox-Multilingual-AllLang \
-            --local-dir model_cache \
-            --token YOUR_HF_TOKEN
-            
-        The model files should be placed in the model_cache/ directory:
-        - t3_alllang.safetensors (2.0GB) - Main multilingual TTS model
-        - s3gen.pt (1.0GB) - Speech generator model  
-        - ve.pt (5.5MB) - Voice encoder for speaker embeddings
-        - conds.pt (105KB) - Default voice conditionals
-        - mtl_tokenizer.json (67KB) - Multilingual tokenizer
-        """
+        """Load the multilingual TTS model"""
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"🚀 Initializing Chatterbox Multilingual TTS on {self.device}")
+        
+        # Create model cache directory if it doesn't exist
+        os.makedirs(MODEL_CACHE, exist_ok=True)
+
+        # Auto-generated model files from cache_manager
+        model_files = [
+            ".cache.tar",
+            ".gitattributes", 
+            "README.md",
+            "conds.pt",
+            "mtl_tokenizer.json",
+            "s3gen.pt",
+            "t3_alllang.safetensors",
+            "ve.pt",
+            "version.txt",
+            "version_diffusers_cache.txt",
+        ]
+
+        # Download weights using pget if they don't exist
+        for model_file in model_files:
+            url = BASE_URL + model_file
+            filename = url.split("/")[-1]
+            dest_path = os.path.join(MODEL_CACHE, filename)
+            if not os.path.exists(dest_path.replace(".tar", "")):
+                download_weights(url, dest_path)
         
         # Optimize PyTorch settings for better performance
         if self.device == "cuda":
@@ -76,7 +108,7 @@ class Predictor(BasePredictor):
             torch.backends.cudnn.benchmark = True
             torch.cuda.empty_cache()
         
-        # Load model with optimized settings
+        # Load the TTS model (not Stable Diffusion!)
         try:
             self.model = ChatterboxMultilingualTTS.from_pretrained(self.device)
             print(f"✅ Model loaded successfully")
